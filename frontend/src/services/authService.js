@@ -18,20 +18,36 @@ const request = async (endpoint, options = {}) => {
   return data;
 };
 
-const getDemoUser = () => {
-  const stored = localStorage.getItem('mam_demo_user');
-  if (stored) {
-    try {
-      return JSON.parse(stored);
-    } catch {
-      return null;
-    }
+// Local Accounts storage helper
+const getLocalAccounts = () => {
+  try {
+    return JSON.parse(localStorage.getItem('mam_local_accounts') || '[]');
+  } catch {
+    return [];
   }
-  return null;
 };
 
-const saveDemoUser = (user) => {
-  localStorage.setItem('mam_demo_user', JSON.stringify(user));
+const saveLocalAccount = (user) => {
+  const accounts = getLocalAccounts();
+  const existingIndex = accounts.findIndex((a) => a.email.toLowerCase() === user.email.toLowerCase());
+  if (existingIndex >= 0) {
+    accounts[existingIndex] = user;
+  } else {
+    accounts.push(user);
+  }
+  localStorage.setItem('mam_local_accounts', JSON.stringify(accounts));
+};
+
+const getActiveUser = () => {
+  try {
+    return JSON.parse(localStorage.getItem('mam_active_user') || 'null');
+  } catch {
+    return null;
+  }
+};
+
+const setActiveUser = (user) => {
+  localStorage.setItem('mam_active_user', JSON.stringify(user));
 };
 
 export const registerUser = async (payload) => {
@@ -42,18 +58,38 @@ export const registerUser = async (payload) => {
     });
   } catch (error) {
     if (error.message.includes('fetch') || error.message.includes('NetworkError') || error.name === 'TypeError') {
-      console.warn('Backend unreachable. Falling back to demo auth mode.');
-      const demoUser = {
-        id: 'demo-user-id',
-        name: payload.name || payload.email.split('@')[0],
-        email: payload.email || 'user@margdarshi.com',
+      const email = payload.email ? payload.email.trim().toLowerCase() : '';
+      const name = payload.name ? payload.name.trim() : email.split('@')[0];
+      const password = payload.password || '';
+
+      const accounts = getLocalAccounts();
+      const alreadyExists = accounts.find((a) => a.email.toLowerCase() === email);
+
+      if (alreadyExists) {
+        return {
+          success: false,
+          message: 'An account with this email already exists. Please sign in.',
+        };
+      }
+
+      const newUser = {
+        id: 'user-' + Date.now(),
+        name,
+        email,
+        password,
       };
-      saveDemoUser(demoUser);
+
+      saveLocalAccount(newUser);
+      setActiveUser({ id: newUser.id, name: newUser.name, email: newUser.email });
+
+      const userSession = { id: newUser.id, name: newUser.name, email: newUser.email };
+      const token = 'local-token-' + newUser.id;
+
       return {
         success: true,
         data: {
-          token: 'demo-jwt-token-12345',
-          user: demoUser,
+          token,
+          user: userSession,
         },
       };
     }
@@ -72,19 +108,46 @@ export const loginUser = async (payload) => {
     });
   } catch (error) {
     if (error.message.includes('fetch') || error.message.includes('NetworkError') || error.name === 'TypeError') {
-      console.warn('Backend unreachable. Falling back to demo auth mode.');
-      const existingUser = getDemoUser();
-      const demoUser = existingUser || {
-        id: 'demo-user-id',
-        name: payload.email ? payload.email.split('@')[0] : 'Demo User',
-        email: payload.email || 'user@margdarshi.com',
-      };
-      saveDemoUser(demoUser);
+      const email = payload.email ? payload.email.trim().toLowerCase() : '';
+      const password = payload.password || '';
+
+      const accounts = getLocalAccounts();
+      const userAcc = accounts.find((a) => a.email.toLowerCase() === email);
+
+      if (!userAcc) {
+        const newUser = {
+          id: 'user-' + Date.now(),
+          name: email.split('@')[0],
+          email,
+          password,
+        };
+        saveLocalAccount(newUser);
+        setActiveUser({ id: newUser.id, name: newUser.name, email: newUser.email });
+        return {
+          success: true,
+          data: {
+            token: 'local-token-' + newUser.id,
+            user: { id: newUser.id, name: newUser.name, email: newUser.email },
+          },
+        };
+      }
+
+      if (userAcc.password && userAcc.password !== password) {
+        return {
+          success: false,
+          message: 'Incorrect password. Please try again.',
+        };
+      }
+
+      const userSession = { id: userAcc.id, name: userAcc.name, email: userAcc.email };
+      setActiveUser(userSession);
+      const token = 'local-token-' + userAcc.id;
+
       return {
         success: true,
         data: {
-          token: 'demo-jwt-token-12345',
-          user: demoUser,
+          token,
+          user: userSession,
         },
       };
     }
@@ -96,16 +159,14 @@ export const loginUser = async (payload) => {
 };
 
 export const getCurrentUser = async (token) => {
-  if (token === 'demo-jwt-token-12345') {
-    const demoUser = getDemoUser() || {
-      id: 'demo-user-id',
-      name: 'Demo User',
-      email: 'user@margdarshi.com',
-    };
-    return {
-      success: true,
-      data: { user: demoUser },
-    };
+  if (token && token.startsWith('local-token-')) {
+    const activeUser = getActiveUser();
+    if (activeUser) {
+      return {
+        success: true,
+        data: { user: activeUser },
+      };
+    }
   }
 
   try {
@@ -117,14 +178,14 @@ export const getCurrentUser = async (token) => {
     });
   } catch (error) {
     if (error.message.includes('fetch') || error.message.includes('NetworkError') || error.name === 'TypeError') {
-      const demoUser = getDemoUser() || {
-        id: 'demo-user-id',
-        name: 'Demo User',
+      const activeUser = getActiveUser() || {
+        id: 'user-default',
+        name: 'Margdarshi User',
         email: 'user@margdarshi.com',
       };
       return {
         success: true,
-        data: { user: demoUser },
+        data: { user: activeUser },
       };
     }
     return {
